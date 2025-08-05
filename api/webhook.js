@@ -1,22 +1,12 @@
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
-// Get bot token from environment variables
-const token = '7346817601:AAH8boOYeT521yf4Ge3TXV_yuAwhWc3eVag';
-if (!token) {
-  console.error('Error: TELEGRAM_BOT_TOKEN is not set in environment variables');
-  throw new Error('TELEGRAM_BOT_TOKEN is required');
-}
-
-// Initialize bot without polling (webhook mode)
-const bot = new TelegramBot(token);
-
 // Pollinations API base URLs
 const TEXT_API = 'https://text.pollinations.ai/';
 const IMAGE_API = 'https://image.pollinations.ai/prompt/';
 
 // Helper function to handle text generation
-async function handleTextGeneration(chatId, text) {
+async function handleTextGeneration(bot, chatId, text) {
   try {
     const prompt = encodeURIComponent(text);
     const response = await axios.post(TEXT_API, {
@@ -37,7 +27,7 @@ async function handleTextGeneration(chatId, text) {
 }
 
 // Helper function to handle image generation
-async function handleImageGeneration(chatId, text) {
+async function handleImageGeneration(bot, chatId, text) {
   try {
     const userPrompt = text.replace(/(create an image|generate a picture|draw|paint|sketch|make an image|make a picture|produce an image|illustrate|design a picture|render an image|create image|generate image|create picture|generate picture)/gi, '').trim();
     const prompt = encodeURIComponent(userPrompt);
@@ -50,7 +40,7 @@ async function handleImageGeneration(chatId, text) {
 }
 
 // Helper function to handle image analysis
-async function handleImageAnalysis(chatId, photo, caption) {
+async function handleImageAnalysis(bot, token, chatId, photo, caption) {
   try {
     const file = await bot.getFile(photo.file_id);
     const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
@@ -80,6 +70,16 @@ async function handleImageAnalysis(chatId, photo, caption) {
 
 // Main webhook handler
 export default async function handler(req, res) {
+  // Get bot token from environment variables
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+  if (!token) {
+    console.error('Error: TELEGRAM_BOT_TOKEN is not set in environment variables');
+    return res.status(500).json({ error: 'Bot token not configured' });
+  }
+
+  // Initialize bot without polling (webhook mode)
+  const bot = new TelegramBot(token);
+
   if (req.method !== 'POST') {
     return res.status(405).json({ error: 'Method not allowed' });
   }
@@ -127,11 +127,11 @@ export default async function handler(req, res) {
           text.includes('create picture') || text.includes('generate picture')) {
         
         await bot.sendMessage(chatId, 'Generating your image...');
-        await handleImageGeneration(chatId, text);
+        await handleImageGeneration(bot, chatId, text);
       } else {
         // Text generation request
         await bot.sendMessage(chatId, 'Processing your request...');
-        await handleTextGeneration(chatId, text);
+        await handleTextGeneration(bot, chatId, text);
       }
     }
 
@@ -141,7 +141,7 @@ export default async function handler(req, res) {
       const caption = msg.caption ? msg.caption.trim() : 'Describe this image';
       
       await bot.sendMessage(chatId, 'Analyzing your image...');
-      await handleImageAnalysis(chatId, photo, caption);
+      await handleImageAnalysis(bot, token, chatId, photo, caption);
     }
 
     return res.status(200).json({ ok: true });
