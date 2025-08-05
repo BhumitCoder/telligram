@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
@@ -5,17 +6,17 @@ const bodyParser = require('body-parser');
 
 // Initialize Express app
 const app = express();
-const port =  3000;
+const port = process.env.PORT || 3000;
 
 // Load Telegram bot token
-const token =  "7346817601:AAH8boOYeT521yf4Ge3TXV_yuAwhWc3eVag";
+const token = process.env.TELEGRAM_BOT_TOKEN || "7346817601:AAH8boOYeT521yf4Ge3TXV_yuAwhWc3eVag";
 if (!token) {
   console.error('Error: TELEGRAM_BOT_TOKEN is not set in .env file');
   process.exit(1);
 }
 
 // Initialize Telegram bot with webhook
-const webhookUrl =  `https://telligram.vercel.app/bot${token}`;
+const webhookUrl = process.env.WEBHOOK_URL || `https://telligram.vercel.app/bot${token}`;
 const bot = new TelegramBot(token);
 bot.setWebHook(webhookUrl)
   .then(() => console.log(`Webhook set to ${webhookUrl}`))
@@ -27,24 +28,78 @@ bot.setWebHook(webhookUrl)
 // Middleware
 app.use(bodyParser.json());
 
+// Pollinations API base URLs
+const TEXT_API = 'https://text.pollinations.ai/';
+const IMAGE_API = 'https://image.pollinations.ai/prompt/';
+
+// Store latest API response time and status
+let latestApiResponse = {
+  responseTime: null,
+  status: 'unknown',
+  lastChecked: null,
+  error: null
+};
+
+// Retry function for API calls
+const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      const start = Date.now();
+      const response = await axios(config);
+      const responseTime = Date.now() - start;
+      latestApiResponse = {
+        responseTime: responseTime,
+        status: 'success',
+        lastChecked: new Date().toISOString(),
+        error: null
+      };
+      console.log(`API call to ${config.url} succeeded in ${responseTime}ms`);
+      return response;
+    } catch (error) {
+      latestApiResponse = {
+        responseTime: null,
+        status: 'failed',
+        lastChecked: new Date().toISOString(),
+        error: error.message
+      };
+      if (i === retries - 1) throw error;
+      console.warn(`Retry ${i + 1}/${retries} for ${config.url}: ${error.message}`);
+      await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i))); // Exponential backoff
+    }
+  }
+};
+
 // Health check route
-app.get('/health', (req, res) => {
-  bot.getMe()
-    .then((botInfo) => {
-      res.status(200).json({
-        status: 'healthy',
-        bot: `@${botInfo.username}`,
-        uptime: process.uptime(),
-        timestamp: new Date().toISOString()
-      });
-    })
-    .catch((error) => {
-      res.status(500).json({
-        status: 'unhealthy',
-        error: error.message,
-        timestamp: new Date().toISOString()
-      });
+app.get('/health', async (req, res) => {
+  try {
+    const botInfo = await bot.getMe();
+    res.status(200).json({
+      status: 'healthy',
+      bot: `@${botInfo.username}`,
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      pollinationsApi: {
+        responseTime: latestApiResponse.responseTime !== null ? `${latestApiResponse.responseTime}ms` : 'No API calls made yet',
+        status: latestApiResponse.status,
+        lastChecked: latestApiResponse.lastChecked || 'Never',
+        error: latestApiResponse.error || null
+      }
     });
+  } catch (error) {
+    res.status(500).json({
+      status: 'unhealthy',
+      bot: 'unknown',
+      uptime: process.uptime(),
+      timestamp: new Date().toISOString(),
+      error: error.message,
+      pollinationsApi: {
+        responseTime: latestApiResponse.responseTime !== null ? `${latestApiResponse.responseTime}ms` : 'No API calls made yet',
+        status: latestApiResponse.status,
+        lastChecked: latestApiResponse.lastChecked || 'Never',
+        error: latestApiResponse.error || null
+      }
+    });
+  }
 });
 
 // Webhook route for Telegram
@@ -52,10 +107,6 @@ app.post(`/bot${token}`, (req, res) => {
   bot.processUpdate(req.body);
   res.sendStatus(200);
 });
-
-// Pollinations API base URLs
-const TEXT_API = 'https://text.pollinations.ai/';
-const IMAGE_API = 'https://image.pollinations.ai/prompt/';
 
 // Test bot connection on startup
 bot.getMe()
@@ -86,19 +137,6 @@ bot.onText(/\/help/, (msg) => {
     `- **Image Analysis**: Send an image with a caption (e.g., send an image with caption "What is in this picture?").\n\n` +
     `BAI will process your input accordingly. Please feel free to explore its capabilities.`);
 });
-
-// Retry function for API calls
-const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
-  for (let i = 0; i < retries; i++) {
-    try {
-      return await axios(config);
-    } catch (error) {
-      if (i === retries - 1) throw error;
-      console.warn(`Retry ${i + 1}/${retries} for ${config.url}: ${error.message}`);
-      await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i))); // Exponential backoff
-    }
-  }
-};
 
 // Handle all messages
 bot.on('message', async (msg) => {
@@ -139,7 +177,7 @@ bot.on('message', async (msg) => {
             ],
             max_tokens: 300
           },
-          timeout: 15000 // Increased timeout to 15 seconds
+          timeout: 15000 // 15 seconds timeout
         });
         const textResponse = response.data || 'Sorry, I could not generate a response.';
         bot.sendMessage(chatId, `${textResponse}`);
@@ -163,7 +201,7 @@ bot.on('message', async (msg) => {
       try {
         const response = await axiosWithRetry({
           method: 'post',
-          url: 'https://text.pollinations.ai/',
+          url: TEXT_API,
           data: {
             model: 'openai',
             messages: [
@@ -178,7 +216,7 @@ bot.on('message', async (msg) => {
             ],
             max_tokens: 300
           },
-          timeout: 15000 // Increased timeout to 15 seconds
+          timeout: 15000 // 15 seconds timeout
         });
         const text = response.data || 'Sorry, I could not analyze the image.';
         bot.sendMessage(chatId, `${text}`);
