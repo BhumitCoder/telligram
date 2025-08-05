@@ -48,11 +48,6 @@ let latestApiResponse = {
   attemptCount: 0
 };
 
-// Track processing messages to avoid duplicates
-const processingMessages = new Map();
-// Track active requests to prevent duplicate responses
-const activeRequests = new Map();
-
 // Retry function for API calls
 const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
   for (let i = 0; i < retries; i++) {
@@ -82,12 +77,6 @@ const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
       await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i))); // Exponential backoff
     }
   }
-};
-
-// Simple fallback responses for common queries (not used in current implementation)
-const fallbackResponses = {
-  'what is ai?': 'Artificial Intelligence (AI) is the simulation of human intelligence in machines, enabling them to perform tasks like reasoning, learning, and problem-solving. Try again later for a more detailed response!',
-  'what is the capital of france?': 'The capital of France is Paris. Try again later for more details!'
 };
 
 // Test Pollinations API on startup
@@ -198,74 +187,8 @@ bot.onText(/\/help/, async (msg) => {
   }
 });
 
-// Helper function to send processing message
-const sendProcessingMessage = async (chatId, message) => {
-  const key = `${chatId}_${Date.now()}`;
-  try {
-    const sentMessage = await bot.sendMessage(chatId, message);
-    processingMessages.set(key, sentMessage.message_id);
-    return key;
-  } catch (error) {
-    console.error(`Error sending processing message to chat ${chatId}: ${error.message}`);
-    return null;
-  }
-};
-
-// Helper function to update or delete processing message
-const updateProcessingMessage = async (chatId, key, newText = null) => {
-  if (!key || !processingMessages.has(key)) return;
-  
-  const messageId = processingMessages.get(key);
-  try {
-    if (newText) {
-      await bot.editMessageText(newText, {
-        chat_id: chatId,
-        message_id: messageId
-      });
-    } else {
-      await bot.deleteMessage(chatId, messageId);
-    }
-  } catch (error) {
-    console.error(`Error updating/deleting processing message in chat ${chatId}: ${error.message}`);
-  } finally {
-    processingMessages.delete(key);
-  }
-};
-
-// Helper function to handle API requests - only respond on success
-const handleApiRequest = async (chatId, requestKey, apiCall, processingKey, successCallback) => {
-  // Check if same request is already being processed
-  if (activeRequests.has(requestKey)) {
-    console.log(`Duplicate request ignored for ${requestKey}`);
-    return;
-  }
-
-  // Mark request as active
-  activeRequests.set(requestKey, Date.now());
-  
-  try {
-    const response = await apiCall();
-    
-    // Only process if request is still active and response is valid
-    if (activeRequests.has(requestKey)) {
-      activeRequests.delete(requestKey);
-      await successCallback(response);
-    }
-    
-  } catch (error) {
-    console.error(`API request failed for ${requestKey}: ${error.message}`);
-    
-    // Clean up tracking but don't send error message
-    if (activeRequests.has(requestKey)) {
-      activeRequests.delete(requestKey);
-    }
-    
-    // Just delete the processing message silently
-    if (processingKey && processingMessages.has(processingKey)) {
-      await updateProcessingMessage(chatId, processingKey);
-    }
-  }
-};
+// Track processing messages and prevent duplicates
+const processingStates = new Map();
 
 // Handle all messages
 bot.on('message', async (msg) => {
@@ -273,10 +196,23 @@ bot.on('message', async (msg) => {
   if (msg.text && msg.text.startsWith('/')) return;
   
   const chatId = msg.chat.id;
+  const messageId = msg.message_id;
   const text = msg.text ? msg.text.trim().toLowerCase() : '';
+  
+  // Create unique key for this message
+  const messageKey = `${chatId}_${messageId}`;
+  
+  // Skip if already processing this message
+  if (processingStates.has(messageKey)) {
+    console.log(`Already processing message ${messageKey}, skipping...`);
+    return;
+  }
 
   // Handle text input (text generation or image generation)
   if (text && !msg.photo) {
+    // Mark as processing
+    processingStates.set(messageKey, { type: 'text', timestamp: Date.now() });
+    
     if (text.includes('create an image') || text.includes('generate a picture') || 
         text.includes('draw') || text.includes('paint') || text.includes('sketch') ||
         text.includes('make an image') || text.includes('make a picture') || 
@@ -285,33 +221,56 @@ bot.on('message', async (msg) => {
         text.includes('create image') || text.includes('generate image') ||
         text.includes('create picture') || text.includes('generate picture')) {
       
-      const requestKey = `img_${chatId}_${msg.message_id}`;
-      const processingKey = await sendProcessingMessage(chatId, 'Generating your image...');
+      let processingMessage = null;
       
-      const apiCall = async () => {
+      try {
+        // Send processing message
+        processingMessage = await bot.sendMessage(chatId, 'Generating your image...');
+        console.log(`Sent processing message for image generation: ${messageKey}`);
+        
+        // Generate image
         const userPrompt = text.replace(/(create an image|generate a picture|draw|paint|sketch|make an image|make a picture|produce an image|illustrate|design a picture|render an image|create image|generate image|create picture|generate picture)/gi, '').trim();
         const prompt = encodeURIComponent(userPrompt);
         const url = `${IMAGE_API}${prompt}?width=512&height=512&model=flux&nologo=true`;
-        return { url, originalText: text };
-      };
-
-      const successCallback = async (response) => {
-        if (processingKey) {
-          await updateProcessingMessage(chatId, processingKey);
+        
+        console.log(`Generating image with URL: ${url}`);
+        
+        // Delete processing message
+        if (processingMessage) {
+          await bot.deleteMessage(chatId, processingMessage.message_id);
         }
-        await bot.sendPhoto(chatId, response.url, { caption: `Image generated by BAI, for: ${response.originalText}` });
-        console.log(`Successfully generated image for prompt "${text}" in chat ${chatId}`);
-      };
-
-      await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback);
+        
+        // Send image
+        await bot.sendPhoto(chatId, url, { caption: `Image generated by BAI, for: ${msg.text}` });
+        console.log(`Successfully sent image for message: ${messageKey}`);
+        
+      } catch (error) {
+        console.error(`Image generation failed for ${messageKey}: ${error.message}`);
+        
+        // Delete processing message if it exists
+        if (processingMessage) {
+          try {
+            await bot.deleteMessage(chatId, processingMessage.message_id);
+          } catch (deleteError) {
+            console.error(`Failed to delete processing message: ${deleteError.message}`);
+          }
+        }
+      } finally {
+        // Clean up processing state
+        processingStates.delete(messageKey);
+      }
       
     } else {
       // Text generation
-      const requestKey = `text_${chatId}_${msg.message_id}`;
-      const processingKey = await sendProcessingMessage(chatId, 'Processing your request...');
+      let processingMessage = null;
       
-      const apiCall = async () => {
-        console.log(`Sending API request for prompt: ${text} in chat ${chatId}`);
+      try {
+        // Send processing message
+        processingMessage = await bot.sendMessage(chatId, 'Processing your request...');
+        console.log(`Sent processing message for text generation: ${messageKey}`);
+        
+        // Make API call
+        console.log(`Making text API call for: "${msg.text}"`);
         const response = await axiosWithRetry({
           method: 'post',
           url: TEXT_API,
@@ -319,42 +278,62 @@ bot.on('message', async (msg) => {
             model: 'openai',
             messages: [
               { role: 'system', content: 'You are BAI, an AI assistant trained by Bhumit Panchani. Respond professionally and avoid identifying as any other entity.' },
-              { role: 'user', content: text }
+              { role: 'user', content: msg.text }
             ],
             max_tokens: 300
           },
-          timeout: 15000
+          timeout: 30000
         });
-        return response;
-      };
-
-      const successCallback = async (response) => {
-        const textResponse = response.data || 'Sorry, I could not generate a response.';
-        console.log(`Received API response for prompt "${text}" in chat ${chatId}`);
         
-        if (processingKey) {
-          await updateProcessingMessage(chatId, processingKey);
+        console.log(`Received API response for ${messageKey}:`, response.data);
+        
+        // Delete processing message
+        if (processingMessage) {
+          await bot.deleteMessage(chatId, processingMessage.message_id);
         }
+        
+        // Send response
+        const textResponse = response.data || 'No response received from API.';
         await bot.sendMessage(chatId, textResponse);
-      };
-
-      await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback);
+        console.log(`Successfully sent text response for message: ${messageKey}`);
+        
+      } catch (error) {
+        console.error(`Text generation failed for ${messageKey}: ${error.message}`);
+        
+        // Delete processing message if it exists
+        if (processingMessage) {
+          try {
+            await bot.deleteMessage(chatId, processingMessage.message_id);
+          } catch (deleteError) {
+            console.error(`Failed to delete processing message: ${deleteError.message}`);
+          }
+        }
+      } finally {
+        // Clean up processing state
+        processingStates.delete(messageKey);
+      }
     }
   }
 
   // Handle image input (analysis)
   if (msg.photo) {
+    // Mark as processing
+    processingStates.set(messageKey, { type: 'image', timestamp: Date.now() });
+    
     const photo = msg.photo[msg.photo.length - 1]; // Get highest resolution
     const caption = msg.caption ? msg.caption.trim() : 'Describe this image';
-    
-    const requestKey = `analysis_${chatId}_${msg.message_id}`;
-    const processingKey = await sendProcessingMessage(chatId, 'Analyzing your image...');
+    let processingMessage = null;
 
-    const apiCall = async () => {
+    try {
+      // Send processing message
+      processingMessage = await bot.sendMessage(chatId, 'Analyzing your image...');
+      console.log(`Sent processing message for image analysis: ${messageKey}`);
+      
+      // Get image file
       const file = await bot.getFile(photo.file_id);
       const fileUrl = `https://api.telegram.org/file/bot${token}/${file.file_path}`;
 
-      console.log(`Sending image analysis request for caption "${caption}" in chat ${chatId}`);
+      console.log(`Making image analysis API call for: "${caption}"`);
       const response = await axiosWithRetry({
         method: 'post',
         url: TEXT_API,
@@ -372,24 +351,51 @@ bot.on('message', async (msg) => {
           ],
           max_tokens: 300
         },
-        timeout: 15000
+        timeout: 30000
       });
-      return response;
-    };
-
-    const successCallback = async (response) => {
-      const analysisText = response.data || 'Sorry, I could not analyze the image.';
-      console.log(`Received image analysis response for caption "${caption}" in chat ${chatId}`);
       
-      if (processingKey) {
-        await updateProcessingMessage(chatId, processingKey);
+      console.log(`Received image analysis response for ${messageKey}:`, response.data);
+      
+      // Delete processing message
+      if (processingMessage) {
+        await bot.deleteMessage(chatId, processingMessage.message_id);
       }
+      
+      // Send response
+      const analysisText = response.data || 'No analysis received from API.';
       await bot.sendMessage(chatId, analysisText);
-    };
-
-    await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback);
+      console.log(`Successfully sent image analysis response for message: ${messageKey}`);
+      
+    } catch (error) {
+      console.error(`Image analysis failed for ${messageKey}: ${error.message}`);
+      
+      // Delete processing message if it exists
+      if (processingMessage) {
+        try {
+          await bot.deleteMessage(chatId, processingMessage.message_id);
+        } catch (deleteError) {
+          console.error(`Failed to delete processing message: ${deleteError.message}`);
+        }
+      }
+    } finally {
+      // Clean up processing state
+      processingStates.delete(messageKey);
+    }
   }
 });
+
+// Clean up old processing states every 5 minutes
+setInterval(() => {
+  const now = Date.now();
+  const fiveMinutesAgo = now - (5 * 60 * 1000);
+  
+  for (const [key, state] of processingStates.entries()) {
+    if (state.timestamp < fiveMinutesAgo) {
+      console.log(`Cleaning up old processing state: ${key}`);
+      processingStates.delete(key);
+    }
+  }
+}, 5 * 60 * 1000);
 
 // Start Express server
 app.listen(port, () => {
