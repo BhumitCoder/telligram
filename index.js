@@ -112,7 +112,7 @@ const testPollinationsApi = async () => {
 testPollinationsApi();
 
 // Health check route
-app.get('/health', async (req, res) => {
+app.get('/', async (req, res) => {
   try {
     const botInfo = await bot.getMe();
     res.status(200).json({
