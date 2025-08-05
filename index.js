@@ -5,7 +5,7 @@ const bodyParser = require('body-parser');
 
 // Initialize Express app
 const app = express();
-const port = process.env.PORT || 3000;
+const port = 3000;
 
 // Load Telegram bot token
 const token = "7346817601:AAH8boOYeT521yf4Ge3TXV_yuAwhWc3eVag";
