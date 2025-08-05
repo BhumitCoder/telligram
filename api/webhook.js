@@ -2,7 +2,7 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 
 // Get bot token from environment variables
-const token = process.env.TELEGRAM_BOT_TOKEN;
+const token = '7346817601:AAH8boOYeT521yf4Ge3TXV_yuAwhWc3eVag';
 if (!token) {
   console.error('Error: TELEGRAM_BOT_TOKEN is not set in environment variables');
   throw new Error('TELEGRAM_BOT_TOKEN is required');
