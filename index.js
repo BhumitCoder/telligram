@@ -84,7 +84,7 @@ const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
   }
 };
 
-// Simple fallback responses for common queries
+// Simple fallback responses for common queries (not used in current implementation)
 const fallbackResponses = {
   'what is ai?': 'Artificial Intelligence (AI) is the simulation of human intelligence in machines, enabling them to perform tasks like reasoning, learning, and problem-solving. Try again later for a more detailed response!',
   'what is the capital of france?': 'The capital of France is Paris. Try again later for more details!'
@@ -232,8 +232,8 @@ const updateProcessingMessage = async (chatId, key, newText = null) => {
   }
 };
 
-// Helper function to handle API requests with timeout and duplicate prevention
-const handleApiRequest = async (chatId, requestKey, apiCall, processingKey, successCallback, errorCallback) => {
+// Helper function to handle API requests - only respond on success
+const handleApiRequest = async (chatId, requestKey, apiCall, processingKey, successCallback) => {
   // Check if same request is already being processed
   if (activeRequests.has(requestKey)) {
     console.log(`Duplicate request ignored for ${requestKey}`);
@@ -243,32 +243,26 @@ const handleApiRequest = async (chatId, requestKey, apiCall, processingKey, succ
   // Mark request as active
   activeRequests.set(requestKey, Date.now());
   
-  // Set a timeout to clean up the processing message if API takes too long
-  const timeoutId = setTimeout(async () => {
-    console.log(`Request timeout for ${requestKey}`);
-    activeRequests.delete(requestKey);
-    if (processingKey && processingMessages.has(processingKey)) {
-      await updateProcessingMessage(chatId, processingKey, 'Request timed out. Please try again.');
-    }
-  }, 20000); // 20 second timeout
-
   try {
     const response = await apiCall();
-    clearTimeout(timeoutId);
     
-    // Only process if request is still active (not timed out)
+    // Only process if request is still active and response is valid
     if (activeRequests.has(requestKey)) {
       activeRequests.delete(requestKey);
       await successCallback(response);
     }
     
   } catch (error) {
-    clearTimeout(timeoutId);
+    console.error(`API request failed for ${requestKey}: ${error.message}`);
     
-    // Only process error if request is still active (not timed out)
+    // Clean up tracking but don't send error message
     if (activeRequests.has(requestKey)) {
       activeRequests.delete(requestKey);
-      await errorCallback(error);
+    }
+    
+    // Just delete the processing message silently
+    if (processingKey && processingMessages.has(processingKey)) {
+      await updateProcessingMessage(chatId, processingKey);
     }
   }
 };
@@ -309,14 +303,7 @@ bot.on('message', async (msg) => {
         console.log(`Successfully generated image for prompt "${text}" in chat ${chatId}`);
       };
 
-      const errorCallback = async (error) => {
-        console.error(`Image generation error for prompt "${text}" in chat ${chatId}: ${error.message}`);
-        if (processingKey) {
-          await updateProcessingMessage(chatId, processingKey, `Error: Failed to generate image. Please try again or simplify your description.`);
-        }
-      };
-
-      await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback, errorCallback);
+      await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback);
       
     } else {
       // Text generation
@@ -351,16 +338,7 @@ bot.on('message', async (msg) => {
         await bot.sendMessage(chatId, textResponse);
       };
 
-      const errorCallback = async (error) => {
-        console.error(`Text generation error for prompt "${text}" in chat ${chatId}: ${error.message}`);
-        const fallback = fallbackResponses[text] || 'Sorry, the API is currently slow or unavailable. Please try again later or ask a simple question like "What is the capital of France?"';
-        
-        if (processingKey) {
-          await updateProcessingMessage(chatId, processingKey, fallback);
-        }
-      };
-
-      await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback, errorCallback);
+      await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback);
     }
   }
 
@@ -409,16 +387,7 @@ bot.on('message', async (msg) => {
       await bot.sendMessage(chatId, analysisText);
     };
 
-    const errorCallback = async (error) => {
-      console.error(`Image analysis error for caption "${caption}" in chat ${chatId}: ${error.message}`);
-      const fallbackMessage = 'Sorry, the API is currently slow or unavailable. Please try sending the image again later.';
-      
-      if (processingKey) {
-        await updateProcessingMessage(chatId, processingKey, fallbackMessage);
-      }
-    };
-
-    await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback, errorCallback);
+    await handleApiRequest(chatId, requestKey, apiCall, processingKey, successCallback);
   }
 });
 
