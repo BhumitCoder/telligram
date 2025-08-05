@@ -37,7 +37,8 @@ let latestApiResponse = {
   responseTime: null,
   status: 'unknown',
   lastChecked: null,
-  error: null
+  error: null,
+  attemptCount: 0
 };
 
 // Retry function for API calls
@@ -51,16 +52,18 @@ const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
         responseTime: responseTime,
         status: 'success',
         lastChecked: new Date().toISOString(),
-        error: null
+        error: null,
+        attemptCount: i + 1
       };
-      console.log(`API call to ${config.url} succeeded in ${responseTime}ms`);
+      console.log(`API call to ${config.url} succeeded in ${responseTime}ms after ${i + 1} attempt(s)`);
       return response;
     } catch (error) {
       latestApiResponse = {
         responseTime: null,
         status: 'failed',
         lastChecked: new Date().toISOString(),
-        error: error.message
+        error: error.message,
+        attemptCount: i + 1
       };
       if (i === retries - 1) throw error;
       console.warn(`Retry ${i + 1}/${retries} for ${config.url}: ${error.message}`);
@@ -68,6 +71,32 @@ const axiosWithRetry = async (config, retries = 3, delay = 1000) => {
     }
   }
 };
+
+// Test Pollinations API on startup
+const testPollinationsApi = async () => {
+  console.log('Testing Pollinations API on startup...');
+  try {
+    await axiosWithRetry({
+      method: 'post',
+      url: TEXT_API,
+      data: {
+        model: 'openai',
+        messages: [
+          { role: 'system', content: 'You are a test system.' },
+          { role: 'user', content: 'Test API connectivity' }
+        ],
+        max_tokens: 10
+      },
+      timeout: 15000
+    });
+    console.log('Pollinations API test successful');
+  } catch (error) {
+    console.error('Pollinations API test failed:', error.message);
+  }
+};
+
+// Run API test on startup
+testPollinationsApi();
 
 // Health check route
 app.get('/health', async (req, res) => {
@@ -79,10 +108,11 @@ app.get('/health', async (req, res) => {
       uptime: process.uptime(),
       timestamp: new Date().toISOString(),
       pollinationsApi: {
-        responseTime: latestApiResponse.responseTime !== null ? `${latestApiResponse.responseTime}ms` : 'No API calls made yet',
+        responseTime: latestApiResponse.responseTime !== null ? `${latestApiResponse.responseTime}ms` : 'Failed or no successful calls',
         status: latestApiResponse.status,
         lastChecked: latestApiResponse.lastChecked || 'Never',
-        error: latestApiResponse.error || null
+        error: latestApiResponse.error || null,
+        attemptCount: latestApiResponse.attemptCount || 0
       }
     });
   } catch (error) {
@@ -93,10 +123,11 @@ app.get('/health', async (req, res) => {
       timestamp: new Date().toISOString(),
       error: error.message,
       pollinationsApi: {
-        responseTime: latestApiResponse.responseTime !== null ? `${latestApiResponse.responseTime}ms` : 'No API calls made yet',
+        responseTime: latestApiResponse.responseTime !== null ? `${latestApiResponse.responseTime}ms` : 'Failed or no successful calls',
         status: latestApiResponse.status,
         lastChecked: latestApiResponse.lastChecked || 'Never',
-        error: latestApiResponse.error || null
+        error: latestApiResponse.error || null,
+        attemptCount: latestApiResponse.attemptCount || 0
       }
     });
   }
@@ -183,7 +214,7 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, `${textResponse}`);
       } catch (error) {
         console.error(`Text generation error: ${error.message}`);
-        bot.sendMessage(chatId, `Error: Failed to generate text. The API may be slow or unavailable. Please try again later or rephrase your request. (${error.message})`);
+        bot.sendMessage(chatId, `Error: Failed to generate text. The API is currently slow or unavailable. Please try again later or rephrase your request. As a fallback, try asking something simple like "What is the capital of France?"`);
       }
     }
   }
@@ -222,7 +253,7 @@ bot.on('message', async (msg) => {
         bot.sendMessage(chatId, `${text}`);
       } catch (error) {
         console.error(`Image analysis error: ${error.message}`);
-        bot.sendMessage(chatId, `Error: Failed to analyze the image. Please try again. (${error.message})`);
+        bot.sendMessage(chatId, `Error: Failed to analyze the image. The API is currently slow or unavailable. Please try again later.`);
       }
     } catch (error) {
       console.error(`Image processing error: ${error.message}`);
